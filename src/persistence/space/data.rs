@@ -28,6 +28,14 @@ pub struct SpaceData<PkGenState, const INNER_PAGE_SIZE: usize, const PAGE_SIZE: 
     pub data_file: File,
 }
 
+fn last_page_id_after_creation(last_page_id: u32, ids_to_create: &[u32]) -> u32 {
+    ids_to_create
+        .iter()
+        .copied()
+        .max()
+        .map_or(last_page_id, |max| last_page_id.max(max))
+}
+
 impl<PkGenState, const INNER_PAGE_SIZE: usize, const PAGE_SIZE: u32> SpaceData<PkGenState, INNER_PAGE_SIZE, PAGE_SIZE> {
     async fn update_data_length(&mut self) -> eyre::Result<()> {
         let offset = (u32::default().aligned_size() * 6) as u32;
@@ -131,9 +139,7 @@ where
             .cloned()
             .collect::<Vec<_>>();
 
-        if let Some(max) = ids_to_create.last() {
-            self.last_page_id = *max;
-        }
+        self.last_page_id = last_page_id_after_creation(self.last_page_id, &ids_to_create);
         let created_pages = ids_to_create
             .into_iter()
             .map(|id| GeneralPage {
@@ -173,5 +179,15 @@ where
 
     fn save_info(&mut self) -> impl Future<Output = eyre::Result<()>> + Send {
         persist_page(&mut self.info, &mut self.data_file)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::last_page_id_after_creation;
+
+    #[test]
+    fn created_pages_keep_high_water_mark_when_unordered() {
+        assert_eq!(last_page_id_after_creation(9, &[12, 10, 11]), 12);
     }
 }

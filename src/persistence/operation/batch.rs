@@ -194,7 +194,6 @@ where
     pub async fn validate(
         &mut self,
         last_ids: &LastEventIds<AvailableIndexes>,
-        attempts: usize,
     ) -> eyre::Result<Option<Vec<Operation<PrimaryKeyGenState, PrimaryKey, SecondaryEvents>>>> {
         let mut valid = false;
 
@@ -246,22 +245,8 @@ where
                 && !id.is_next_for(last_ids.primary_id)
                 && last_ids.primary_id != IndexChangeEventId::default()
             {
-                let mut possibly_valid = false;
-                if id.inner().overflowing_sub(last_ids.primary_id.inner()).0 == 2 {
-                    // TODO: for split sometimes this happens
-                    let ev = prepared_evs.primary_evs.first().unwrap();
-                    if let ChangeEvent::SplitNode { .. } = ev {
-                        possibly_valid = true
-                    }
-                    if attempts > 8 {
-                        possibly_valid = true
-                    }
-                }
-
-                if !possibly_valid {
-                    self.ops.extend(ops_to_remove);
-                    return Ok(None);
-                }
+                self.ops.extend(ops_to_remove);
+                return Ok(None);
             }
             let secondary_first = prepared_evs.secondary_evs.first_evs();
             for (index, id) in secondary_first {
@@ -272,19 +257,8 @@ where
                     && !id.is_next_for(*last)
                     && *last != IndexChangeEventId::default()
                 {
-                    let mut possibly_valid = false;
-                    if id.inner().overflowing_sub(last.inner()).0 == 2 {
-                        // TODO: for split sometimes this happens
-                        possibly_valid = prepared_evs.secondary_evs.is_first_ev_is_split(index);
-                        if attempts > 8 {
-                            possibly_valid = true
-                        }
-                    }
-
-                    if !possibly_valid {
-                        self.ops.extend(ops_to_remove);
-                        return Ok(None);
-                    }
+                    self.ops.extend(ops_to_remove);
+                    return Ok(None);
                 }
             }
         }

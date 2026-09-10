@@ -3,6 +3,7 @@ use std::path::Path;
 
 mod migration;
 mod persistence;
+mod regression;
 mod worktable;
 mod worktable_version;
 

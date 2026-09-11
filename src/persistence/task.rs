@@ -270,6 +270,7 @@ pub struct Queue<PrimaryKeyGenState, PrimaryKey, SecondaryKeys> {
     queue: lockfree::queue::Queue<Operation<PrimaryKeyGenState, PrimaryKey, SecondaryKeys>>,
     notify: Notify,
     len: Arc<AtomicU16>,
+    in_progress: AtomicBool,
 }
 
 impl<PrimaryKeyGenState, PrimaryKey, SecondaryKeys> Queue<PrimaryKeyGenState, PrimaryKey, SecondaryKeys> {
@@ -278,6 +279,7 @@ impl<PrimaryKeyGenState, PrimaryKey, SecondaryKeys> Queue<PrimaryKeyGenState, Pr
             queue: lockfree::queue::Queue::new(),
             notify: Notify::new(),
             len: Arc::new(AtomicU16::new(0)),
+            in_progress: AtomicBool::new(true),
         }
     }
 
@@ -287,10 +289,22 @@ impl<PrimaryKeyGenState, PrimaryKey, SecondaryKeys> Queue<PrimaryKeyGenState, Pr
         self.notify.notify_one();
     }
 
+    fn mark_idle(&self) {
+        self.in_progress.store(false, Ordering::Release);
+    }
+
+    fn is_in_progress(&self) -> bool {
+        self.in_progress.load(Ordering::Acquire)
+    }
+
+    /// Marks the analyzer busy before publishing the dequeued operation as
+    /// removed from the queue. Otherwise `wait_for_ops` can observe an empty
+    /// queue and analyzer while this operation is still in flight.
     pub async fn pop(&self) -> Operation<PrimaryKeyGenState, PrimaryKey, SecondaryKeys> {
         loop {
             // Drain values
             if let Some(value) = self.queue.pop() {
+                self.in_progress.store(true, Ordering::Release);
                 self.len.fetch_sub(1, Ordering::Release);
                 return value;
             }
@@ -327,7 +341,6 @@ pub struct PersistenceTask<PrimaryKeyGenState, PrimaryKey, SecondaryKeys, Availa
     engine_task_handle: tokio::task::AbortHandle,
     queue: Arc<Queue<PrimaryKeyGenState, PrimaryKey, SecondaryKeys>>,
     analyzer_inner_wt: Arc<QueueInnerWorkTable>,
-    analyzer_in_progress: Arc<AtomicBool>,
     progress_notify: Arc<Notify>,
     phantom_data: PhantomData<AvailableIndexes>,
 }
@@ -354,19 +367,15 @@ impl<PrimaryKeyGenState, PrimaryKey, SecondaryKeys, AvailableIndexes>
         let engine_progress_notify = progress_notify.clone();
         let analyzer_inner_wt: Arc<QueueInnerWorkTable> = Default::default();
         let mut analyzer = QueueAnalyzer::new(analyzer_inner_wt.clone());
-        let analyzer_in_progress = Arc::new(AtomicBool::new(true));
-        let task_analyzer_in_progress = analyzer_in_progress.clone();
 
         let task = async move {
             loop {
                 let op = if let Some(next_op) = engine_queue.immediate_pop() {
                     Some(next_op)
                 } else if analyzer.len() == 0 {
+                    engine_queue.mark_idle();
                     engine_progress_notify.notify_waiters();
-                    task_analyzer_in_progress.store(false, Ordering::Release);
-                    let res = Some(engine_queue.pop().await);
-                    task_analyzer_in_progress.store(true, Ordering::Release);
-                    res
+                    Some(engine_queue.pop().await)
                 } else {
                     None
                 };
@@ -399,7 +408,6 @@ impl<PrimaryKeyGenState, PrimaryKey, SecondaryKeys, AvailableIndexes>
             queue,
             engine_task_handle,
             analyzer_inner_wt,
-            analyzer_in_progress,
             progress_notify,
             phantom_data: PhantomData,
         }
@@ -412,7 +420,7 @@ impl<PrimaryKeyGenState, PrimaryKey, SecondaryKeys, AvailableIndexes>
         if self.analyzer_inner_wt.count() != 0 {
             return false;
         }
-        if self.analyzer_in_progress.load(Ordering::Acquire) {
+        if self.queue.is_in_progress() {
             return false;
         }
         true
@@ -434,5 +442,33 @@ impl<PrimaryKeyGenState, PrimaryKey, SecondaryKeys, AvailableIndexes>
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::operation::{AcknowledgeOperation, Operation};
+
+    #[tokio::test]
+    async fn dequeued_operation_keeps_wait_for_ops_busy() {
+        let queue = Arc::new(Queue::new());
+        let task: PersistenceTask<(), (), (), ()> = PersistenceTask {
+            engine_task_handle: tokio::spawn(async {}).abort_handle(),
+            queue: queue.clone(),
+            analyzer_inner_wt: Default::default(),
+            progress_notify: Arc::new(Notify::new()),
+            phantom_data: PhantomData,
+        };
+        task.queue.mark_idle();
+        task.queue.push(Operation::Acknowledge(AcknowledgeOperation {
+            id: OperationId::default(),
+            primary_key_events: Vec::new(),
+            secondary_keys_events: (),
+        }));
+
+        task.queue.pop().await;
+
+        assert!(!task.check_wait_triggers());
     }
 }

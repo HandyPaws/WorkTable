@@ -39,7 +39,6 @@ pub struct QueueAnalyzer<PrimaryKeyGenState, PrimaryKey, SecondaryKeys, Availabl
     last_events_ids: LastEventIds<AvailableIndexes>,
     last_invalid_batch_size: usize,
     page_limit: usize,
-    attempts: usize,
 }
 
 #[derive(Debug)]
@@ -91,7 +90,6 @@ where
             last_events_ids: Default::default(),
             last_invalid_batch_size: 0,
             page_limit: MAX_PAGE_AMOUNT,
-            attempts: 0,
         }
     }
 
@@ -240,20 +238,18 @@ where
         }
 
         let mut op = BatchOperation::new(ops, info_wt);
-        let invalid_for_this_batch_ops = op.validate(&self.last_events_ids, self.attempts).await?;
+        let invalid_for_this_batch_ops = op.validate(&self.last_events_ids).await?;
         if let Some(invalid_for_this_batch_ops) = invalid_for_this_batch_ops {
             self.extend_from_iter(invalid_for_this_batch_ops.into_iter())?;
             let last_ids = op.get_last_event_ids();
             self.last_events_ids.merge(last_ids);
             self.last_invalid_batch_size = 0;
             self.page_limit = MAX_PAGE_AMOUNT;
-            self.attempts = 0;
 
             Ok(Some(op))
         } else {
             // can't collect batch for now
             let ops = op.ops();
-            self.attempts += 1;
             if self.last_invalid_batch_size == ops.len() {
                 self.page_limit += 8;
             } else {

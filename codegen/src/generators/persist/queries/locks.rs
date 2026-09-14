@@ -98,70 +98,34 @@ impl PersistGenerator {
     }
 
     pub fn gen_full_lock_for_update(&self) -> TokenStream {
-        let name_generator = WorktableNameGenerator::from_table_name(self.name.to_string());
-        let lock_ident = name_generator.get_lock_type_ident();
-
         quote! {
             let lock_id = self.0.lock_manager.next_id();
-            if let Some(lock) = self.0.lock_manager.get(&pk) {
-                let mut lock_guard = lock.write().await;
-                #[allow(clippy::mutable_key_type)]
-                let (locks, op_lock) = lock_guard.lock(lock_id);
-                drop(lock_guard);
-                futures::future::join_all(locks.iter().map(|l| l.wait()).collect::<Vec<_>>()).await;
-
-                op_lock
-            } else {
-                #[allow(clippy::mutable_key_type)]
-                let (lock, op_lock) = #lock_ident::with_lock(lock_id);
-                let lock = std::sync::Arc::new(tokio::sync::RwLock::new(lock));
-                let mut guard = lock.write().await;
-                if let Some(old_lock) = self.0.lock_manager.insert(pk.clone(), lock.clone()) {
-                    let mut old_lock_guard = old_lock.write().await;
-                    #[allow(clippy::mutable_key_type)]
-                    let locks = guard.merge(&mut *old_lock_guard);
-                    drop(old_lock_guard);
-                    drop(guard);
-
-                    futures::future::join_all(locks.iter().map(|l| l.wait()).collect::<Vec<_>>()).await;
-                }
-
-                op_lock
-            }
+            let lock = self
+                .0
+                .lock_manager
+                .get_or_insert(pk.clone());
+            let mut lock_guard = lock.write().await;
+            #[allow(clippy::mutable_key_type)]
+            let (locks, op_lock) = lock_guard.lock(lock_id);
+            drop(lock_guard);
+            futures::future::join_all(locks.iter().map(|l| l.wait()).collect::<Vec<_>>()).await;
+            op_lock
         }
     }
 
     pub fn gen_custom_lock_for_update(&self, ident: Ident) -> TokenStream {
-        let name_generator = WorktableNameGenerator::from_table_name(self.name.to_string());
-        let lock_ident = name_generator.get_lock_type_ident();
-
         quote! {
             let lock_id = self.0.lock_manager.next_id();
-            if let Some(lock) = self.0.lock_manager.get(&pk) {
-                let mut lock_guard = lock.write().await;
-                #[allow(clippy::mutable_key_type)]
-                let (locks, op_lock) = lock_guard.#ident(lock_id);
-                drop(lock_guard);
-                futures::future::join_all(locks.iter().map(|l| l.wait()).collect::<Vec<_>>()).await;
-                op_lock
-            } else {
-                let mut lock = #lock_ident::new();
-                #[allow(clippy::mutable_key_type)]
-                let (_, op_lock) = lock.#ident(lock_id);
-                let lock = std::sync::Arc::new(tokio::sync::RwLock::new(lock));
-                let mut guard = lock.write().await;
-                if let Some(old_lock) = self.0.lock_manager.insert(pk.clone(), lock.clone()) {
-                    let mut old_lock_guard = old_lock.write().await;
-                    #[allow(clippy::mutable_key_type)]
-                    let locks = guard.merge(&mut *old_lock_guard);
-                    drop(old_lock_guard);
-                    drop(guard);
-
-                    futures::future::join_all(locks.iter().map(|l| l.wait()).collect::<Vec<_>>()).await;
-                }
-
-                op_lock
-            }
+            let lock = self
+                .0
+                .lock_manager
+                .get_or_insert(pk.clone());
+            let mut lock_guard = lock.write().await;
+            #[allow(clippy::mutable_key_type)]
+            let (locks, op_lock) = lock_guard.#ident(lock_id);
+            drop(lock_guard);
+            futures::future::join_all(locks.iter().map(|l| l.wait()).collect::<Vec<_>>()).await;
+            op_lock
         }
     }
 }

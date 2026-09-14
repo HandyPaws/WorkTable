@@ -106,6 +106,18 @@ impl Lock {
         }
     }
 
+    /// Creates a lock whose acquisition flag starts released.
+    ///
+    /// This is used only for the empty placeholder inside a freshly created
+    /// row-lock state; the first operation replaces it before waiting.
+    pub fn new_released(id: u16) -> Self {
+        Self {
+            id,
+            locked: Arc::new(AtomicBool::new(false)),
+            wakers: Mutex::new(vec![]),
+        }
+    }
+
     pub fn id(&self) -> u16 {
         self.id
     }

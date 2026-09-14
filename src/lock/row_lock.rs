@@ -6,6 +6,10 @@ use std::sync::Arc;
 use crate::lock::{Lock, LockGuard, LockMap, LockWait};
 
 pub trait RowLock {
+    /// Creates an unlocked row lock with no predecessor operation.
+    fn new() -> Self
+    where
+        Self: Sized;
     /// Checks if any column of this row is locked.
     fn is_locked(&self) -> bool;
     /// Creates new [`RowLock`] with all columns locked.
@@ -52,6 +56,15 @@ impl FullRowLock {
 
 #[allow(clippy::mutable_key_type)]
 impl RowLock for FullRowLock {
+    fn new() -> Self
+    where
+        Self: Sized,
+    {
+        Self {
+            l: Arc::new(Lock::new_released(0)),
+        }
+    }
+
     fn is_locked(&self) -> bool {
         self.l.is_locked()
     }
